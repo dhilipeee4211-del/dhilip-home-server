@@ -156,6 +156,7 @@ def create_app() -> Flask:
     from app.routes.files import files_bp
     from app.routes.media import media_bp
     from app.routes.auth import auth_bp
+    from app.routes.dashboard import dashboard_bp
 
     app.register_blueprint(health_bp)
     app.register_blueprint(system_bp)
@@ -164,6 +165,7 @@ def create_app() -> Flask:
     app.register_blueprint(files_bp)
     app.register_blueprint(media_bp)
     app.register_blueprint(auth_bp)
+    app.register_blueprint(dashboard_bp)
 
     # Error Handlers conforming to Section 20
     @app.errorhandler(404)
