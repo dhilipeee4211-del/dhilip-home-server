@@ -70,7 +70,7 @@ class Config:
 
     # Server Info
     NAME = "DhilipHome Server"
-    VERSION = "0.1.0"
+    VERSION = "0.2.1"
 
     # Network Binding
     HOST = os.getenv("HOST", "0.0.0.0")

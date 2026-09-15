@@ -159,6 +159,23 @@ def require_auth(f):
     return decorated
 
 
+
+def require_admin(f):
+    """Require an authenticated administrator for destructive/edit operations."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = get_request_token()
+        if not token:
+            return error_response("AUTH_REQUIRED", "Authentication token is required for this action", 401)
+        is_valid, claims, err = verify_token(token)
+        if not is_valid:
+            return error_response("AUTH_INVALID", f"Authentication failed: {err}", 401)
+        if str((claims or {}).get("role", "")).lower() != "admin":
+            return error_response("ADMIN_REQUIRED", "Administrator permission is required for this action", 403)
+        request.current_user = claims
+        return f(*args, **kwargs)
+    return decorated
+
 def success_response(data: Any = None, message: str = None, status: int = 200):
     """Consistent JSON success response format."""
     payload = {"success": True}

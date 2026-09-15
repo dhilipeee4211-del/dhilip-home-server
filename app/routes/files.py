@@ -4,30 +4,24 @@ Provides secure directory traversal, metadata inspection, file upload, download,
 Strictly confined inside Config.MEDIA_ROOT.
 """
 
+from flask import Blueprint, request, send_file, jsonify
 import os
-import uuid
 import threading
+import time
 import urllib.request
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
-
-from flask import Blueprint, request, send_file, jsonify
 from werkzeug.utils import secure_filename
-
 from app.services.file_service import FileService
-from app.utils.security import require_auth, success_response, error_response
+from app.services.media_service import MediaService
+from app.utils.security import require_auth, require_admin, success_response, error_response
 from app.utils.config import Config
 
 files_bp = Blueprint("files", __name__)
 
-# ---------------------------------------------------------------------------
-# Server-side "cloud download" (remote-download) support
-# ---------------------------------------------------------------------------
 _remote_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dhilip-remote-download")
 _remote_lock = threading.Lock()
 _remote_tasks = {}
-_remote_cancel_flags = {}
-
 
 def _remote_download_worker(task_id, url, destination, filename):
     target_dir = FileService.resolve_safe_path(destination)
@@ -39,14 +33,19 @@ def _remote_download_worker(task_id, url, destination, filename):
 
     tmp = target.with_name(target.name + ".part")
     req = urllib.request.Request(url, headers={"User-Agent": "DhilipHome-Server/0.1"})
+    started = time.monotonic()
+    last_sample_time = started
+    last_sample_bytes = 0
     with urllib.request.urlopen(req, timeout=30) as response, open(tmp, "wb") as out:
         total = int(response.headers.get("Content-Length") or 0)
         downloaded = 0
         with _remote_lock:
             _remote_tasks[task_id].update(status="downloading", total_bytes=total)
         while True:
-            if _remote_cancel_flags.get(task_id):
-                raise InterruptedError("Download cancelled by user")
+            with _remote_lock:
+                current = _remote_tasks.get(task_id, {})
+                if current.get("cancel_requested"):
+                    raise InterruptedError("Cancelled by user")
             chunk = response.read(1024 * 1024)
             if not chunk:
                 break
@@ -56,47 +55,42 @@ def _remote_download_worker(task_id, url, destination, filename):
                 task = _remote_tasks.get(task_id)
                 if task:
                     task["downloaded_bytes"] = downloaded
-                    task["progress_percent"] = (
-                        int(downloaded * 100 / total) if total else min(99, task.get("progress_percent", 0) + 1)
-                    )
+                    task["progress_percent"] = int(downloaded * 100 / total) if total else min(99, task.get("progress_percent", 0) + 1)
+                    now = time.monotonic()
+                    elapsed = max(now - last_sample_time, 0.001)
+                    if now - last_sample_time >= 0.5:
+                        bps = max(0, int((downloaded - last_sample_bytes) / elapsed))
+                        task["speed_bps"] = bps
+                        task["speed"] = f"{bps / 1024 / 1024:.2f} MB/s" if bps >= 1024 * 1024 else f"{bps / 1024:.1f} KB/s" if bps >= 1024 else f"{bps} B/s"
+                        last_sample_time = now
+                        last_sample_bytes = downloaded
         out.flush()
         os.fsync(out.fileno())
     os.replace(tmp, target)
+    rel_path = target.relative_to(Config.MEDIA_ROOT).as_posix()
+    try:
+        MediaService.index_file(rel_path)
+    except Exception:
+        pass
     with _remote_lock:
-        _remote_tasks[task_id].update(
-            status="completed",
-            progress_percent=100,
-            downloaded_bytes=target.stat().st_size,
-            path=target.relative_to(Config.MEDIA_ROOT).as_posix(),
-        )
-
+        _remote_tasks[task_id].update(status="completed", progress_percent=100,
+                                      downloaded_bytes=target.stat().st_size, speed_bps=0, speed="Complete", path=rel_path)
 
 def _run_remote_download(task_id, url, destination, filename):
     try:
         _remote_download_worker(task_id, url, destination, filename)
-    except InterruptedError as exc:
-        with _remote_lock:
-            if task_id in _remote_tasks:
-                _remote_tasks[task_id].update(status="failed", error=str(exc))
-        _cleanup_partial(destination, filename)
     except Exception as exc:
+        try:
+            target_dir = FileService.resolve_safe_path(destination)
+            if target_dir:
+                partial = target_dir / (secure_filename(filename) + ".part")
+                if partial.exists(): partial.unlink()
+        except Exception:
+            pass
         with _remote_lock:
             if task_id in _remote_tasks:
-                _remote_tasks[task_id].update(status="failed", error=str(exc))
-        _cleanup_partial(destination, filename)
-    finally:
-        _remote_cancel_flags.pop(task_id, None)
+                _remote_tasks[task_id].update(status="cancelled" if isinstance(exc, InterruptedError) else "failed", error="Cancelled by user" if isinstance(exc, InterruptedError) else str(exc))
 
-
-def _cleanup_partial(destination, filename):
-    try:
-        target_dir = FileService.resolve_safe_path(destination)
-        if target_dir:
-            partial = target_dir / (secure_filename(filename) + ".part")
-            if partial.exists():
-                partial.unlink()
-    except Exception:
-        pass
 
 
 @files_bp.route("/api/files/remote-download", methods=["POST"])
@@ -107,35 +101,36 @@ def start_remote_download():
     url = str(data.get("url", "")).strip()
     destination = str(data.get("destination", "") or "").strip() or "/"
     filename = str(data.get("filename", "") or "").strip()
-
     if not url or not url.lower().startswith(("http://", "https://")):
         return error_response("INVALID_URL", "Only HTTP/HTTPS URLs are supported", 400)
-
     if not filename:
         filename = os.path.basename(urllib.parse.urlparse(url).path) or "download.bin"
     filename = secure_filename(filename)
     if not filename:
         return error_response("INVALID_FILENAME", "Invalid destination filename", 400)
-
-    target_dir = FileService.resolve_safe_path(destination)
-    if target_dir is None or not target_dir.is_dir():
+    if FileService.resolve_safe_path(destination) is None or not FileService.resolve_safe_path(destination).is_dir():
         return error_response("DESTINATION_NOT_FOUND", "Destination folder does not exist", 404)
-
+    import uuid
     task_id = "srvdl_" + uuid.uuid4().hex[:10]
     with _remote_lock:
-        _remote_tasks[task_id] = {
-            "task_id": task_id,
-            "status": "queued",
-            "progress_percent": 0,
-            "downloaded_bytes": 0,
-            "total_bytes": 0,
-            "filename": filename,
-            "destination": destination,
-            "url": url,
-        }
+        _remote_tasks[task_id] = {"task_id": task_id, "status": "queued", "progress_percent": 0,
+                                  "downloaded_bytes": 0, "total_bytes": 0, "filename": filename,
+                                  "destination": destination, "url": url, "speed_bps": 0, "speed": "Starting…", "started_at": time.time()}
     _remote_executor.submit(_run_remote_download, task_id, url, destination, filename)
     return success_response(_remote_tasks[task_id], "Server download started", 202)
 
+@files_bp.route("/api/files/remote-download/<task_id>/cancel", methods=["POST"])
+@require_auth
+def cancel_remote_download(task_id):
+    with _remote_lock:
+        task = _remote_tasks.get(task_id)
+        if not task:
+            return error_response("TASK_NOT_FOUND", "Download task was not found", 404)
+        if task.get("status") in ("completed", "failed", "cancelled"):
+            return success_response(dict(task), "Download already finished")
+        task["cancel_requested"] = True
+        task["status"] = "cancelling"
+    return success_response({"task_id": task_id, "status": "cancelling"}, "Cancellation requested")
 
 @files_bp.route("/api/files/remote-download", methods=["GET"])
 @require_auth
@@ -148,29 +143,6 @@ def remote_download_status():
     if not task:
         return error_response("TASK_NOT_FOUND", "Download task was not found", 404)
     return success_response(task)
-
-
-@files_bp.route("/api/files/remote-download", methods=["DELETE"])
-@require_auth
-def cancel_remote_download():
-    """Cancel an in-progress server-side download."""
-    task_id = request.args.get("task_id", "").strip()
-    if not task_id:
-        data = request.get_json(silent=True) or {}
-        task_id = str(data.get("task_id", "")).strip()
-    if not task_id:
-        return error_response("TASK_ID_REQUIRED", "task_id is required", 400)
-
-    with _remote_lock:
-        task = _remote_tasks.get(task_id)
-        if not task:
-            return error_response("TASK_NOT_FOUND", "Download task was not found", 404)
-        if task.get("status") in ("completed", "failed"):
-            return success_response(task, "Task already finished")
-
-    _remote_cancel_flags[task_id] = True
-    return success_response({"task_id": task_id}, "Cancellation requested")
-
 
 @files_bp.route("/api/files", methods=["GET"])
 @files_bp.route("/api/files/list", methods=["GET"])
@@ -293,8 +265,30 @@ def create_folder():
         return error_response("FOLDER_CREATE_FAILED", str(e), 500)
 
 
+@files_bp.route("/api/files/rename", methods=["POST"])
+@require_admin
+def rename_file_or_folder():
+    data = request.get_json(silent=True) or {}
+    path_arg = str(data.get("path", "")).strip()
+    new_name = str(data.get("name", "")).strip()
+    if not path_arg or not new_name:
+        return error_response("PARAM_REQUIRED", "Both path and name are required", 400)
+    safe_name = secure_filename(new_name)
+    if not safe_name:
+        return error_response("INVALID_NAME", "Invalid destination name", 400)
+    target = FileService.resolve_safe_path(path_arg)
+    if target is None or not target.exists() or target == Config.MEDIA_ROOT:
+        return error_response("FILE_NOT_FOUND", "Item not found or invalid path", 404)
+    destination = target.parent / safe_name
+    if not FileService.resolve_safe_path(destination.relative_to(Config.MEDIA_ROOT).as_posix()):
+        return error_response("INVALID_PATH", "Destination is outside media root", 400)
+    if destination.exists():
+        return error_response("NAME_EXISTS", "An item with that name already exists", 409)
+    target.rename(destination)
+    return success_response(FileService.get_item_info(destination.relative_to(Config.MEDIA_ROOT).as_posix()), "Item renamed successfully")
+
 @files_bp.route("/api/files", methods=["DELETE"])
-@require_auth
+@require_admin
 def delete_file_or_folder():
     """
     Delete a file or directory from MEDIA_ROOT.
