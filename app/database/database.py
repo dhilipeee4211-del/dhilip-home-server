@@ -81,6 +81,26 @@ def init_db():
             );
         """)
 
+        # 4. Persistent server-side cloud download jobs
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS download_jobs (
+                task_id TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                destination TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                progress_percent INTEGER NOT NULL DEFAULT 0,
+                downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+                total_bytes INTEGER NOT NULL DEFAULT 0,
+                speed_bps REAL NOT NULL DEFAULT 0,
+                error TEXT,
+                path TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status);")
+
         # 4. Settings Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS settings (

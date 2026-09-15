@@ -116,6 +116,8 @@ def start_system_telemetry_worker(app: Flask):
             try:
                 metrics = SystemService.get_complete_system_metrics()
                 socketio.emit("system_update", metrics)
+                from app.services.download_service import DownloadService
+                socketio.emit("download_update", {"tasks": DownloadService.list()})
             except Exception:
                 pass
             time.sleep(interval)
@@ -225,7 +227,9 @@ def create_app() -> Flask:
     def on_disconnect():
         app.logger.info("Realtime WebSocket client disconnected")
 
-    # Start background workers
+    # Start persistent server-side download manager and background workers
+    from app.services.download_service import DownloadService
+    DownloadService.init()
     start_udp_discovery_worker(app)
     start_system_telemetry_worker(app)
 
