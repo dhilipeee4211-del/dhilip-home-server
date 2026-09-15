@@ -63,6 +63,13 @@ class FileService:
                         "modified_timestamp": stat.st_mtime,
                     })
                 elif entry.is_file(follow_symlinks=False):
+                    # Transfer scratch files are internal implementation details.
+                    lower_name = entry.name.lower()
+                    if (
+                        lower_name.startswith(("upload_cache_", "cloud_dl_", "part_"))
+                        or lower_name.endswith((".part", ".tmp", ".temp", ".download", ".crdownload"))
+                    ):
+                        continue
                     mime_type, _ = mimetypes.guess_type(entry.name)
                     ext = Path(entry.name).suffix.lower().lstrip(".")
                     files.append({
