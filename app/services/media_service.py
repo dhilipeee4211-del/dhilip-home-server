@@ -107,26 +107,6 @@ class MediaService:
         }
 
     @classmethod
-    def index_file(cls, relative_path: str) -> bool:
-        """Index one completed media file without rescanning the whole library."""
-        target = (Config.MEDIA_ROOT / relative_path.strip().lstrip("/\\")).resolve()
-        if not is_safe_path(Config.MEDIA_ROOT, target) or not target.is_file():
-            return False
-        stat = target.stat()
-        filename = target.name
-        mime, _ = mimetypes.guess_type(filename)
-        MediaModel.upsert(
-            filename=filename,
-            relative_path=target.relative_to(Config.MEDIA_ROOT).as_posix(),
-            category=classify_media_file(filename, target.relative_to(Config.MEDIA_ROOT).as_posix()),
-            extension=target.suffix.lower().lstrip("."),
-            mime_type=mime or "application/octet-stream",
-            size_bytes=stat.st_size,
-            modified_time=stat.st_mtime,
-        )
-        return True
-
-    @classmethod
     def list_media(cls, category: Optional[str] = None) -> Dict[str, Any]:
         """List indexed media items, optionally filtered by category."""
         items = MediaModel.search(query="", category=category, limit=2000)

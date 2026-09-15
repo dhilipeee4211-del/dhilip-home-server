@@ -6,7 +6,7 @@ and HTTP 206 partial content streaming optimized for Android VideoView, ExoPlaye
 
 from flask import Blueprint, request, Response, jsonify
 from app.services.media_service import MediaService
-from app.utils.security import require_auth, success_response, error_response
+from app.utils.security import require_auth, success_response, error_response, get_request_token, verify_token
 from app.utils.config import Config
 
 media_bp = Blueprint("media", __name__)
@@ -83,6 +83,11 @@ def stream_media(subpath: str):
     without reading whole file into RAM.
     Supports query parameter 'token' for authenticated media players.
     """
+    token = get_request_token()
+    valid, _, err = verify_token(token)
+    if not valid:
+        return error_response("AUTH_REQUIRED", f"Authentication failed: {err}", 401)
+
     try:
         range_header = request.headers.get("Range")
         generator, start, end, total_size, mime_type = MediaService.prepare_range_stream(
@@ -97,7 +102,7 @@ def stream_media(subpath: str):
             "Accept-Ranges": "bytes",
             "Content-Range": f"bytes {start}-{end}/{total_size}",
             "Content-Length": str(content_length),
-            "Cache-Control": "public, max-age=3600",
+            "Cache-Control": "private, max-age=3600",
         }
 
         # For HEAD request, return headers only
