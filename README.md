@@ -562,16 +562,3 @@ You can configure a GitHub Actions self-hosted runner on the Debian machine or u
 ---
 
 **Developed for DhilipHome Ecosystem.**
-
-
-## Server-authoritative downloads
-
-Remote/cloud downloads are performed only by the Debian server. The Android client never
-downloads remote bytes. Jobs are stored in SQLite (`download_jobs`), partial files use
-`.part`, and completed files are atomically renamed into `MEDIA_ROOT`. Pause/resume/cancel
-are server-side controls. `GET /api/files/remote-download` returns persistent jobs and the
-server emits `download_progress` Socket.IO events to connected clients.
-
-Paths sent by clients may begin with `/`; the server strips that UI prefix and always
-resolves them relative to `MEDIA_ROOT`. Temporary transfer files are excluded from Files
-and Media indexes.

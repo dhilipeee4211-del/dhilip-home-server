@@ -229,11 +229,4 @@ def create_app() -> Flask:
     start_udp_discovery_worker(app)
     start_system_telemetry_worker(app)
 
-    # Restore persistent server-side download jobs after a server restart.
-    try:
-        from app.services.download_service import resume_persisted_jobs
-        resume_persisted_jobs()
-    except Exception as e:
-        app.logger.error(f"Failed to restore download jobs: {e}")
-
     return app
