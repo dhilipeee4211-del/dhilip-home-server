@@ -65,7 +65,7 @@ def _row_to_dict(row) -> Dict[str, Any]:
 
 def get_task(task_id: str) -> Optional[Dict[str, Any]]:
     with get_db_connection() as conn:
-        row = conn.execute("SELECT * FROM download_jobs WHERE id = ?", (task_id,)).fetchone()
+        row = conn.execute("SELECT * FROM download_jobs WHERE task_id = ?", (task_id,)).fetchone()
         return _row_to_dict(row) if row else None
 
 
@@ -93,7 +93,7 @@ def _update(task_id: str, **fields):
     assignments = ", ".join(f"{k} = ?" for k in fields)
     values = list(fields.values()) + [task_id]
     with get_db_connection() as conn:
-        conn.execute(f"UPDATE download_jobs SET {assignments}, updated_at=CURRENT_TIMESTAMP WHERE id = ?", values)
+        conn.execute(f"UPDATE download_jobs SET {assignments}, updated_at=CURRENT_TIMESTAMP WHERE task_id = ?", values)
     _emit(task_id)
 
 
